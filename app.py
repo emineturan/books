@@ -1,200 +1,107 @@
-from mcp.server.fastmcp import FastMCP
 import requests
 import json
-from typing import Dict, List, Any
+import logging
 
-# MCP sunucusunu başlat
-mcp = FastMCP("Open Library MCP Server")
+# Logging setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-@mcp.tool()
-def get_book_by_olid(olid: str) -> str:
+def getDefinitions(word: str) -> str:
     """
-    Open Library ID (OLID) kullanarak kitap bilgilerini getir.
-    Örnek: OL1M, OL23919A gibi
+    Get definitions for a word.
     """
     try:
-        url = f"https://openlibrary.org/books/{olid}.json"
-        response = requests.get(url)
+        if not word or not word.strip():
+            return "No definitions found."
+        
+        word = word.strip().lower()
+        logger.info(f"Fetching definitions for: {word}")
+        
+        # Use 'https://api.dictionaryapi.dev/api/v2/entries/en/<word>' to get definitions
+        url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
+        response = requests.get(url, timeout=10)
         
         if response.status_code == 200:
             data = response.json()
-            result = {
-                "title": data.get("title", "Bilinmiyor"),
-                "authors": data.get("authors", []),
-                "publish_date": data.get("publish_date", "Bilinmiyor"),
-                "publishers": data.get("publishers", []),
-                "isbn_10": data.get("isbn_10", []),
-                "isbn_13": data.get("isbn_13", []),
-                "number_of_pages": data.get("number_of_pages", "Bilinmiyor"),
-                "subjects": data.get("subjects", []),
-                "url": f"https://openlibrary.org/books/{olid}"
-            }
-            return json.dumps(result, indent=2, ensure_ascii=False)
-        else:
-            return f"Kitap bulunamadı. Status Code: {response.status_code}"
-    except Exception as e:
-        return f"Hata oluştu: {str(e)}"
-
-@mcp.tool()
-def get_book_by_isbn(isbn: str) -> str:
-    """
-    ISBN numarası kullanarak kitap bilgilerini getir.
-    """
-    try:
-        url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn}&format=json&jscmd=data"
-        response = requests.get(url)
-        
-        if response.status_code == 200:
-            data = response.json()
-            book_key = f"ISBN:{isbn}"
+            definitions = []
             
-            if book_key in data:
-                book_info = data[book_key]
-                result = {
-                    "title": book_info.get("title", "Bilinmiyor"),
-                    "authors": [author.get("name", "") for author in book_info.get("authors", [])],
-                    "publishers": [pub.get("name", "") for pub in book_info.get("publishers", [])],
-                    "publish_date": book_info.get("publish_date", "Bilinmiyor"),
-                    "number_of_pages": book_info.get("number_of_pages", "Bilinmiyor"),
-                    "subjects": book_info.get("subjects", []),
-                    "isbn": isbn,
-                    "url": book_info.get("url", "")
-                }
-                return json.dumps(result, indent=2, ensure_ascii=False)
+            # Her anlam için tanımları topla
+            for meaning in data[0]['meanings']:
+                part_of_speech = meaning.get('partOfSpeech', '')
+                for i, definition in enumerate(meaning['definitions']):
+                    if part_of_speech:
+                        definitions.append(f"({part_of_speech}) {definition['definition']}")
+                    else:
+                        definitions.append(definition['definition'])
+            
+            if definitions:
+                result = "\n\n".join(definitions)
+                logger.info(f"Successfully found {len(definitions)} definitions for: {word}")
+                return result
             else:
-                return "ISBN ile eşleşen kitap bulunamadı."
+                return "No definitions found."
         else:
-            return f"Hata oluştu. Status Code: {response.status_code}"
+            logger.warning(f"API returned status code {response.status_code} for word: {word}")
+            return "No definitions found."
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error while fetching definitions for {word}: {e}")
+        return "No definitions found."
     except Exception as e:
-        return f"Hata oluştu: {str(e)}"
+        logger.error(f"Error while fetching definitions for {word}: {e}")
+        return "No definitions found."
 
-@mcp.tool()
-def search_books(query: str, limit: int = 10) -> str:
+def getWordDetails(word: str) -> str:
     """
-    Kitap arama yapar. Başlık, yazar veya genel arama yapabilir.
+    Get detailed word information including phonetics, synonyms, etc.
     """
     try:
-        url = f"https://openlibrary.org/search.json?q={query}&limit={limit}"
-        response = requests.get(url)
+        if not word or not word.strip():
+            return "No word details found."
+        
+        word = word.strip().lower()
+        url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
+        response = requests.get(url, timeout=10)
         
         if response.status_code == 200:
             data = response.json()
-            books = []
+            word_data = data[0]
             
-            for doc in data.get("docs", []):
-                book = {
-                    "title": doc.get("title", "Bilinmiyor"),
-                    "author_name": doc.get("author_name", []),
-                    "first_publish_year": doc.get("first_publish_year", "Bilinmiyor"),
-                    "isbn": doc.get("isbn", []),
-                    "publisher": doc.get("publisher", []),
-                    "key": doc.get("key", ""),
-                    "url": f"https://openlibrary.org{doc.get('key', '')}" if doc.get('key') else ""
-                }
-                books.append(book)
+            result = f"Word: {word_data.get('word', word).upper()}\n\n"
             
-            result = {
-                "found": data.get("numFound", 0),
-                "showing": len(books),
-                "books": books
-            }
-            return json.dumps(result, indent=2, ensure_ascii=False)
-        else:
-            return f"Arama başarısız. Status Code: {response.status_code}"
-    except Exception as e:
-        return f"Hata oluştu: {str(e)}"
-
-@mcp.tool()
-def search_books_by_author(author: str, limit: int = 10) -> str:
-    """
-    Yazar adına göre kitap arama yapar.
-    """
-    try:
-        url = f"https://openlibrary.org/search.json?author={author}&limit={limit}"
-        response = requests.get(url)
-        
-        if response.status_code == 200:
-            data = response.json()
-            books = []
+            # Phonetics
+            if 'phonetics' in word_data and word_data['phonetics']:
+                for phonetic in word_data['phonetics']:
+                    if 'text' in phonetic:
+                        result += f"Pronunciation: {phonetic['text']}\n"
+                        break
+                result += "\n"
             
-            for doc in data.get("docs", []):
-                book = {
-                    "title": doc.get("title", "Bilinmiyor"),
-                    "author_name": doc.get("author_name", []),
-                    "first_publish_year": doc.get("first_publish_year", "Bilinmiyor"),
-                    "isbn": doc.get("isbn", []),
-                    "publisher": doc.get("publisher", []),
-                    "key": doc.get("key", ""),
-                    "url": f"https://openlibrary.org{doc.get('key', '')}" if doc.get('key') else ""
-                }
-                books.append(book)
+            # Meanings with details
+            for meaning in word_data.get('meanings', []):
+                part_of_speech = meaning.get('partOfSpeech', 'Unknown')
+                result += f"Part of Speech: {part_of_speech.title()}\n"
+                
+                for i, definition in enumerate(meaning.get('definitions', []), 1):
+                    result += f"  {i}. {definition.get('definition', '')}\n"
+                    
+                    if 'example' in definition:
+                        result += f"     Example: {definition['example']}\n"
+                
+                # Synonyms
+                if 'synonyms' in meaning and meaning['synonyms']:
+                    result += f"  Synonyms: {', '.join(meaning['synonyms'][:5])}\n"
+                
+                # Antonyms
+                if 'antonyms' in meaning and meaning['antonyms']:
+                    result += f"  Antonyms: {', '.join(meaning['antonyms'][:5])}\n"
+                
+                result += "\n"
             
-            result = {
-                "author": author,
-                "found": data.get("numFound", 0),
-                "showing": len(books),
-                "books": books
-            }
-            return json.dumps(result, indent=2, ensure_ascii=False)
+            return result.strip()
         else:
-            return f"Arama başarısız. Status Code: {response.status_code}"
+            return "No word details found."
+            
     except Exception as e:
-        return f"Hata oluştu: {str(e)}"
-
-@mcp.tool()
-def get_author_info(author_olid: str) -> str:
-    """
-    Yazar OLID'i kullanarak yazar bilgilerini getir.
-    Örnek: OL23919A
-    """
-    try:
-        url = f"https://openlibrary.org/authors/{author_olid}.json"
-        response = requests.get(url)
-        
-        if response.status_code == 200:
-            data = response.json()
-            result = {
-                "name": data.get("name", "Bilinmiyor"),
-                "birth_date": data.get("birth_date", "Bilinmiyor"),
-                "death_date": data.get("death_date", "Bilinmiyor"),
-                "bio": data.get("bio", "Biyografi mevcut değil"),
-                "wikipedia": data.get("wikipedia", ""),
-                "website": data.get("website", ""),
-                "url": f"https://openlibrary.org/authors/{author_olid}"
-            }
-            return json.dumps(result, indent=2, ensure_ascii=False)
-        else:
-            return f"Yazar bulunamadı. Status Code: {response.status_code}"
-    except Exception as e:
-        return f"Hata oluştu: {str(e)}"
-
-@mcp.tool()
-def get_work_info(work_olid: str) -> str:
-    """
-    Work OLID'i kullanarak eser bilgilerini getir.
-    Örnek: OL45883W
-    """
-    try:
-        url = f"https://openlibrary.org/works/{work_olid}.json"
-        response = requests.get(url)
-        
-        if response.status_code == 200:
-            data = response.json()
-            result = {
-                "title": data.get("title", "Bilinmiyor"),
-                "description": data.get("description", "Açıklama mevcut değil"),
-                "subjects": data.get("subjects", []),
-                "authors": data.get("authors", []),
-                "first_publish_date": data.get("first_publish_date", "Bilinmiyor"),
-                "covers": data.get("covers", []),
-                "url": f"https://openlibrary.org/works/{work_olid}"
-            }
-            return json.dumps(result, indent=2, ensure_ascii=False)
-        else:
-            return f"Eser bulunamadı. Status Code: {response.status_code}"
-    except Exception as e:
-        return f"Hata oluştu: {str(e)}"
-
-# MCP sunucusunu çalıştır
-if __name__ == '__main__':
-    mcp.run()
+        logger.error(f"Error while fetching word details for {word}: {e}")
+        return "No word details found."
