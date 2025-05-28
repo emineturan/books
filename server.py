@@ -1,205 +1,139 @@
 import asyncio
-import json
 import logging
-from typing import Any, Sequence
-from mcp.server import Server
-from mcp.types import (
-    Resource,
-    Tool,
-    TextContent,
-    ImageContent,
-    EmbeddedResource,
-)
-import mcp.server.stdio
-from app import getDefinitions
+from mcp.server.fastmcp import FastMCP
+from app import getDefinitions, getWordDetails
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("dictionary-mcp")
+logger = logging.getLogger(__name__)
 
-# MCP sunucusunu oluştur
-server = Server("dictionary-mcp")
+# Initialize MCP server
+mcp = FastMCP("dictionary-mcp")
 
-@server.list_tools()
-async def handle_list_tools() -> list[Tool]:
+@mcp.tool()
+async def get_definitions(word: str) -> str:
     """
-    Mevcut araçların listesini döndür.
-    """
-    return [
-        Tool(
-            name="get_definitions",
-            description="Get definitions for a word using Dictionary API",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "word": {
-                        "type": "string",
-                        "description": "The word to get definitions for",
-                    }
-                },
-                "required": ["word"],
-            },
-        ),
-        Tool(
-            name="get_word_info",
-            description="Get detailed word information including definitions, pronunciation, and etymology",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "word": {
-                        "type": "string",
-                        "description": "The word to get detailed information for",
-                    }
-                },
-                "required": ["word"],
-            },
-        ),
-        Tool(
-            name="search_similar_words",
-            description="Search for words similar to the given word",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "word": {
-                        "type": "string",
-                        "description": "The word to find similar words for",
-                    }
-                },
-                "required": ["word"],
-            },
-        ),
-    ]
-
-@server.call_tool()
-async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-    """
-    Araç çağrılarını işle.
+    Get definitions for a word using Dictionary API.
+    
+    Args:
+        word: The word to get definitions for
+    
+    Returns:
+        Definitions of the word or error message
     """
     try:
-        if name == "get_definitions":
-            word = arguments.get("word", "").strip()
-            if not word:
-                return [TextContent(type="text", text="Lütfen geçerli bir kelime girin.")]
-            
-            logger.info(f"Getting definitions for word: {word}")
-            
-            # Senkron fonksiyonu async içinde çalıştır
-            loop = asyncio.get_event_loop()
-            definitions = await loop.run_in_executor(None, getDefinitions, word)
-            
-            if not definitions or definitions == "No definitions found.":
-                result = f"'{word}' kelimesi için tanım bulunamadı."
-            else:
-                result = f"**{word.upper()}** için tanımlar:\n\n{definitions}"
-            
-            return [TextContent(type="text", text=result)]
+        if not word or not word.strip():
+            return "Please provide a valid word."
         
-        elif name == "get_word_info":
-            word = arguments.get("word", "").strip().lower()
-            if not word:
-                return [TextContent(type="text", text="Lütfen geçerli bir kelime girin.")]
-            
-            logger.info(f"Getting detailed info for word: {word}")
-            
-            import requests
-            url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
-            
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(None, requests.get, url)
-            
-            if response.status_code == 200:
-                data = response.json()
-                word_data = data[0]
-                
-                result = f"**{word_data.get('word', word).upper()}**\n\n"
-                
-                # Fonetik
-                if 'phonetics' in word_data and word_data['phonetics']:
-                    phonetic = word_data['phonetics'][0]
-                    if 'text' in phonetic:
-                        result += f"**Telaffuz:** {phonetic['text']}\n\n"
-                
-                # Anlamlar
-                for i, meaning in enumerate(word_data.get('meanings', []), 1):
-                    part_of_speech = meaning.get('partOfSpeech', 'Bilinmiyor')
-                    result += f"**{i}. {part_of_speech.title()}**\n"
-                    
-                    for j, definition in enumerate(meaning.get('definitions', []), 1):
-                        result += f"   {j}. {definition.get('definition', '')}\n"
-                        
-                        if 'example' in definition:
-                            result += f"      *Örnek: {definition['example']}*\n"
-                    
-                    if 'synonyms' in meaning and meaning['synonyms']:
-                        result += f"   **Eş anlamlılar:** {', '.join(meaning['synonyms'][:5])}\n"
-                    
-                    if 'antonyms' in meaning and meaning['antonyms']:
-                        result += f"   **Zıt anlamlılar:** {', '.join(meaning['antonyms'][:5])}\n"
-                    
-                    result += "\n"
-                
-                return [TextContent(type="text", text=result)]
-            else:
-                return [TextContent(type="text", text=f"'{word}' kelimesi için detaylı bilgi bulunamadı.")]
+        logger.info(f"Getting definitions for: {word}")
         
-        elif name == "search_similar_words":
-            word = arguments.get("word", "").strip().lower()
-            if not word:
-                return [TextContent(type="text", text="Lütfen geçerli bir kelime girin.")]
-            
-            logger.info(f"Searching similar words for: {word}")
-            
-            loop = asyncio.get_event_loop()
-            definitions = await loop.run_in_executor(None, getDefinitions, word)
-            
-            if definitions and definitions != "No definitions found.":
-                return [TextContent(type="text", text=f"'{word}' kelimesi mevcut. Tanımları görmek için get_definitions aracını kullanın.")]
-            
-            # Benzer kelimeler için varyasyonları dene
-            import requests
-            suggestions = []
-            
-            variations = [
-                word + 's',
-                word + 'ed', 
-                word + 'ing',
-                word[:-1] if len(word) > 3 else word,
-                word[:-2] if len(word) > 4 else word,
-            ]
-            
-            for variation in variations:
-                try:
-                    url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{variation}"
-                    response = await loop.run_in_executor(None, requests.get, url)
-                    if response.status_code == 200:
-                        suggestions.append(variation)
-                except:
-                    continue
-            
-            if suggestions:
-                result = f"'{word}' bulunamadı. Benzer kelimeler: {', '.join(suggestions[:5])}"
-            else:
-                result = f"'{word}' kelimesi ve benzer varyasyonları bulunamadı. Yazımı kontrol edin."
-            
-            return [TextContent(type="text", text=result)]
+        # Run the synchronous function in a thread pool
+        loop = asyncio.get_event_loop()
+        definitions = await loop.run_in_executor(None, getDefinitions, word.strip())
         
-        else:
-            return [TextContent(type="text", text=f"Bilinmeyen araç: {name}")]
-    
+        if not definitions or definitions == "No definitions found.":
+            return f"No definitions found for '{word}'."
+        
+        return f"Definitions for '{word.upper()}':\n\n{definitions}"
+        
     except Exception as e:
-        error_msg = f"Hata oluştu: {str(e)}"
+        error_msg = f"Error getting definitions: {str(e)}"
         logger.error(error_msg)
-        return [TextContent(type="text", text=error_msg)]
+        return error_msg
 
-async def main():
-    """Ana fonksiyon."""
-    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options()
-        )
+@mcp.tool()
+async def get_word_details(word: str) -> str:
+    """
+    Get detailed word information including pronunciation, synonyms, and examples.
+    
+    Args:
+        word: The word to get detailed information for
+    
+    Returns:
+        Detailed word information or error message
+    """
+    try:
+        if not word or not word.strip():
+            return "Please provide a valid word."
+        
+        logger.info(f"Getting detailed info for: {word}")
+        
+        # Run the synchronous function in a thread pool
+        loop = asyncio.get_event_loop()
+        details = await loop.run_in_executor(None, getWordDetails, word.strip())
+        
+        if not details or details == "No word details found.":
+            return f"No detailed information found for '{word}'."
+        
+        return details
+        
+    except Exception as e:
+        error_msg = f"Error getting word details: {str(e)}"
+        logger.error(error_msg)
+        return error_msg
+
+@mcp.tool()
+async def search_word(query: str) -> str:
+    """
+    Search for a word and provide basic information.
+    
+    Args:
+        query: The word or phrase to search for
+    
+    Returns:
+        Search results or suggestions
+    """
+    try:
+        if not query or not query.strip():
+            return "Please provide a valid search query."
+        
+        query = query.strip().lower()
+        logger.info(f"Searching for: {query}")
+        
+        # First try exact match
+        loop = asyncio.get_event_loop()
+        definitions = await loop.run_in_executor(None, getDefinitions, query)
+        
+        if definitions and definitions != "No definitions found.":
+            return f"Found '{query}':\n\n{definitions}"
+        
+        # If no exact match, try variations
+        variations = [
+            query + 's',           # plural
+            query + 'ed',          # past tense
+            query + 'ing',         # present participle
+            query[:-1] if len(query) > 3 else query,  # remove last letter
+            query[:-2] if len(query) > 4 else query,  # remove last 2 letters
+        ]
+        
+        found_variations = []
+        for variation in variations:
+            try:
+                var_definitions = await loop.run_in_executor(None, getDefinitions, variation)
+                if var_definitions and var_definitions != "No definitions found.":
+                    found_variations.append(variation)
+                    if len(found_variations) >= 3:  # Limit to 3 suggestions
+                        break
+            except:
+                continue
+        
+        if found_variations:
+            return f"'{query}' not found. Did you mean: {', '.join(found_variations)}?"
+        else:
+            return f"No results found for '{query}'. Please check the spelling."
+        
+    except Exception as e:
+        error_msg = f"Error during search: {str(e)}"
+        logger.error(error_msg)
+        return error_msg
 
 if __name__ == "__main__":
-    logger.info("Dictionary MCP sunucusu başlatılıyor...")
-    asyncio.run(main())
+    try:
+        logger.info("Starting Dictionary MCP Server...")
+        logger.info("Available tools: get_definitions, get_word_details, search_word")
+        mcp.run(transport="stdio")
+    except KeyboardInterrupt:
+        logger.info("Server stopped by user")
+    except Exception as e:
+        logger.error(f"Server error: {e}")
+        raise
